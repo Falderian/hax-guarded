@@ -40,6 +40,7 @@ struct cli_options {
     int one_shot;
     int bare;
     int no_session;
+    int no_sandbox;
 };
 
 /* Parse and validate argv, initializing `options`. A first argument naming a defined preset is

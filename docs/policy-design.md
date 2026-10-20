@@ -104,6 +104,11 @@ sequences are dropped. Enter reprints the options instead of doing nothing silen
 is echoed. `HAX_APPROVE_DEBUG=1` appends every byte read, as hex, to `<state>/hax/approve.log` for
 diagnosing an unfamiliar terminal.
 
+Raw mode also means a bare `\n` keeps the cursor column, which turned a multi-line command into a
+staircase. The detail is now printed as a four-space indented preview, wrapped to the terminal
+width and capped at twelve rows with a `… (N more lines)` tail, so a heredoc no longer pushes the
+question off screen.
+
 ## Configuration
 
 Structured block in `config.json`, read with `config_json_node("policy")` like `catalog.models`.

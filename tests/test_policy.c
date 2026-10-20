@@ -367,6 +367,44 @@ static void test_ask_untrusted_read_only(void)
     EXPECT(config_load(NULL) == 0);
 }
 
+/* --no-sandbox opts out of every decision, including the dangerous confirmation and the static
+ * modes. It is a CLI flag, so the policy module only exposes the switch. */
+static void test_no_sandbox_opts_out(void)
+{
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\",\"bash\":{\"dangerous_commands\":"
+                       "[\"rm\"]}}}") == 0);
+    policy_set_trusted(1);
+    policy_set_workspace_root("/work/project");
+    struct item outside = bash_call("ls /etc");
+    EXPECT(policy_verdict(&outside) == POLICY_VERDICT_ASK);
+    struct item danger = bash_call("rm -rf /");
+    EXPECT(policy_verdict(&danger) == POLICY_VERDICT_ASK);
+    struct item read = path_call("read", "/etc/passwd");
+    EXPECT(policy_verdict(&read) == POLICY_VERDICT_ASK);
+
+    policy_set_no_sandbox(1);
+    EXPECT(!policy_trust_required());
+    EXPECT(policy_verdict(&outside) == POLICY_VERDICT_RUN);
+    EXPECT(policy_verdict(&danger) == POLICY_VERDICT_RUN);
+    EXPECT(policy_verdict(&read) == POLICY_VERDICT_RUN);
+    EXPECT(!policy_denies(&outside));
+
+    EXPECT(config_load("{\"policy\":{\"mode\":\"allow-list\",\"tools\":{\"allow\":"
+                       "[\"read\"]}}}") == 0);
+    struct item shell = bash_call("ls");
+    EXPECT(policy_verdict(&shell) == POLICY_VERDICT_RUN);
+    policy_set_no_sandbox(0);
+    EXPECT(policy_verdict(&shell) == POLICY_VERDICT_DENY);
+
+    item_free(&outside);
+    item_free(&danger);
+    item_free(&read);
+    item_free(&shell);
+    policy_set_workspace_root(NULL);
+    policy_set_trusted(0);
+    EXPECT(config_load(NULL) == 0);
+}
+
 static void test_dangerous_commands(void)
 {
     EXPECT(config_load("{\"policy\":{\"mode\":\"ask\",\"bash\":{\"dangerous_commands\":"
@@ -412,6 +450,7 @@ int main(void)
     test_ask_session_grant();
     test_ask_trusted_dangerous_confirms();
     test_ask_untrusted_read_only();
+    test_no_sandbox_opts_out();
     test_dangerous_commands();
 
     T_REPORT();

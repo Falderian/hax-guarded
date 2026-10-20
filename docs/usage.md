@@ -37,6 +37,7 @@ hax --resume=ID -p "continue"    # resume non-interactively
 | `--no-session` | Do not record this run or add its prompts to persistent recall. |
 | `--raw` | Send only the prompt: no system/context sections and no tools. |
 | `--bare` | Keep the base prompt, environment, and tools, but omit project/delegation context. |
+| `--no-sandbox` | Ignore the tool-call policy for this run: no folder trust prompt, no containment, no dangerous confirmation. |
 | `--provider=NAME` | Select a provider for this run. |
 | `--model=ID` | Select a model for this run. |
 | `--effort=LEVEL` | Select reasoning effort for this run. |

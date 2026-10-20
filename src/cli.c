@@ -45,6 +45,10 @@ static const struct help_option {
     {"--no-session",
      "Don't record this conversation: nothing to resume afterwards, and the prompts you type "
      "aren't added to Ctrl-R recall. Earlier sessions and prompts stay readable."},
+    {"--no-sandbox",
+     "Ignore the tool-call policy for this run: no folder trust prompt, no read-only folder, "
+     "and no dangerous-command confirmation. Policy is a restraint, not a sandbox; this flag "
+     "opts out of the restraint explicitly."},
     {"--raw",
      "Send only the prompt text — no system prompt, no Environment section, no AGENTS.md, no "
      "skills, and no tools. Useful as a barebones chat interface."},
@@ -160,6 +164,7 @@ enum cli_parse_result cli_parse(int argc, char **argv, struct cli_options *optio
         OPT_PRESET,
         OPT_BARE,
         OPT_NO_SESSION,
+        OPT_NO_SANDBOX,
         OPT_JSON,
     };
     static const struct option long_options[] = {
@@ -169,6 +174,7 @@ enum cli_parse_result cli_parse(int argc, char **argv, struct cli_options *optio
         {"continue", no_argument, NULL, 'c'},
         {"resume", optional_argument, NULL, OPT_RESUME},
         {"no-session", no_argument, NULL, OPT_NO_SESSION},
+        {"no-sandbox", no_argument, NULL, OPT_NO_SANDBOX},
         {"json", no_argument, NULL, OPT_JSON},
         {"raw", no_argument, NULL, OPT_RAW},
         {"bare", no_argument, NULL, OPT_BARE},
@@ -216,6 +222,9 @@ enum cli_parse_result cli_parse(int argc, char **argv, struct cli_options *optio
             break;
         case OPT_RAW:
             options->agent_options.raw = 1;
+            break;
+        case OPT_NO_SANDBOX:
+            options->no_sandbox = 1;
             break;
         case OPT_PROVIDER:
             options->selection.provider = optarg;

@@ -11,6 +11,7 @@
 #include "config.h"
 #include "diag.h"
 #include "oneshot.h"
+#include "policy.h"
 #include "provider.h"
 #include "select.h"
 #include "session.h"
@@ -209,6 +210,8 @@ int main(int argc, char **argv)
     /* A restored or newly applied preset may change the theme. */
     theme_init();
     initialize_run_services(resume_path);
+    /* --no-sandbox must be in effect before the gate and the first tool call. */
+    policy_set_no_sandbox(options.no_sandbox);
     /* Ask mode is gated on the folder, and the answer must exist before the first tool call in
      * either mode; a non-interactive run can only inherit an already-recorded trust. */
     trust_gate_establish();

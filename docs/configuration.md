@@ -125,6 +125,10 @@ for `y`. A folder answering `n`, or started non-interactively without a recorded
 read-only — `read` may only touch paths inside the root, `task_wait` runs, and `bash`, `edit` and
 `write` are denied with `error: denied by policy: folder not trusted…` so the model can relay why.
 
+`--no-sandbox` opts out for one run: no launch prompt, no containment, no dangerous
+confirmation, and the static modes ignore their lists too. It is the explicit way to say the
+restraint is not wanted; nothing is written to `trust.json`.
+
 `[a]` records the root in `<state>/hax/trust.json`, so later runs in that worktree skip the prompt,
 including `hax -p`. `[t]` lasts for the process only. Delete the file, or its entry, to revoke.
 

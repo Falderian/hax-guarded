@@ -48,6 +48,9 @@ char *policy_workspace_root(void);
  * root on first use, which is what non-interactive runs rely on. */
 void policy_set_workspace_root(const char *root);
 
+/* Ignore the policy for this run: no folder gate, no containment, no dangerous confirmation. */
+void policy_set_no_sandbox(int enabled);
+
 /* Exact (tool, arguments) grants answered `this session`; cleared when the process ends. */
 void policy_grant_session(const struct item *call);
 int policy_session_granted(const struct item *call);

@@ -23,6 +23,7 @@ static void test_parse_selection_and_prompt_arguments(void)
                     "--raw",
                     "--bare",
                     "--no-session",
+                    "--no-sandbox",
                     "--provider=test",
                     "--model=model-a",
                     "--effort=high",
@@ -38,6 +39,7 @@ static void test_parse_selection_and_prompt_arguments(void)
     EXPECT(options.agent_options.raw == 1);
     EXPECT(options.bare == 1);
     EXPECT(options.no_session == 1);
+    EXPECT(options.no_sandbox == 1);
     EXPECT_STR_EQ(options.selection.provider, "test");
     EXPECT_STR_EQ(options.selection.model, "model-a");
     EXPECT_STR_EQ(options.selection.effort, "high");

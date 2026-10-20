@@ -333,12 +333,13 @@ static int path_denied(const json_t *paths, const char *tool, const char *raw)
 /* --- folder trust ------------------------------------------------------------------ */
 
 static int policy_trusted;
+static int no_sandbox;
 static char *workspace_root_cache;
 
 int policy_trust_required(void)
 {
     int malformed = 0;
-    return policy_mode(policy_block(), &malformed) == POLICY_ASK && !malformed;
+    return !no_sandbox && policy_mode(policy_block(), &malformed) == POLICY_ASK && !malformed;
 }
 
 int policy_is_trusted(void)
@@ -349,6 +350,11 @@ int policy_is_trusted(void)
 void policy_set_trusted(int trusted)
 {
     policy_trusted = trusted;
+}
+
+void policy_set_no_sandbox(int enabled)
+{
+    no_sandbox = enabled;
 }
 
 char *policy_workspace_root(void)
@@ -574,6 +580,8 @@ static int listed_denied(enum policy_mode mode, const json_t *block, const struc
 
 enum policy_verdict policy_verdict(const struct item *call)
 {
+    if (no_sandbox)
+        return POLICY_VERDICT_RUN;
     const json_t *block = policy_block();
     int malformed = 0;
     enum policy_mode mode = policy_mode(block, &malformed);
