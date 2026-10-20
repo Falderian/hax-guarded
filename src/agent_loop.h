@@ -65,6 +65,7 @@ enum agent_loop_tool_action {
     AGENT_LOOP_TOOL_RUN,
     AGENT_LOOP_TOOL_REFUSE,
     AGENT_LOOP_TOOL_SKIP,
+    AGENT_LOOP_TOOL_DENY,
 };
 
 /* What the frontend's checkpoint hook asks of the loop. ABORT stops now: remaining batch tools

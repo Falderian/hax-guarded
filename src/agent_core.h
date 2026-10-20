@@ -17,6 +17,7 @@
 #define INTERRUPT_MARKER "[interrupted]"
 #define REFUSED_RESULT   "error: tool calls are disabled in this session"
 #define REFUSED_MARKER   "[refused: --raw, no tools advertised]"
+#define DENIED_MARKER    "[denied by policy]"
 
 /* Synthetic user text for an empty-send resume. Origin, not text, identifies continuations. */
 #define CONTINUE_MARKER "[continue]"

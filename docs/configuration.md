@@ -100,6 +100,42 @@ export OPENROUTER_API_KEY=...
 For a custom provider, use `api_key_env` to name its credential variable rather than putting the
 credential itself in JSON.
 
+## Tool-call policy
+
+A `policy` block, nested like `presets` and `catalog.models`, limits which tool calls run. It is
+read from the config file only — there is no environment override and no `/config` editor — and an
+absent block leaves execution unchanged.
+
+```json
+{
+  "policy": {
+    "mode": "allow-list",
+    "tools": { "allow": ["read", "edit", "write", "bash", "task_wait"] },
+    "bash": { "allow_commands": ["ls", "cat", "grep", "rg", "find", "git status", "go test"] },
+    "paths": { "deny_prefixes": ["/etc", "/usr", "~/.ssh"], "write_only": true }
+  }
+}
+```
+
+`mode` is `off` (default), `deny-list`, or `allow-list`. `deny-list` denies the tools in
+`tools.deny` and the commands matching `bash.deny_commands`; it catches accidents, not intent,
+because it cannot see through shell composition. `allow-list` is the restraint worth using: a call
+runs only when its tool is in `tools.allow`, every command statement is allowed, and the command
+contains no composition — so `echo $(rm -rf /)` is denied even though `echo` is allowed. A missing
+`tools.allow` under `allow-list` denies everything. `fail_closed` decides what a malformed block
+does.
+
+Commands are split on unquoted `;`, `&&`, `||`, newlines, and pipes, and matched at token
+boundaries, so `git status` accepts `git status --short` and rejects `git stash`; a leading `sudo`
+or `env X=1` is skipped. Path rules apply to `read`, `edit`, and `write`, expand `~`, resolve
+relative paths, and match on path-component boundaries. Denied calls return
+`error: denied by policy: <tool>` to the model and render a `[denied by policy]` row.
+
+This is a guard against mistakes, not a security boundary: a permitted `sh`, `python`, or `make`
+is a general escape, value-bearing wrapper flags (`sudo -u root rm`) are not resolved, and paths
+are matched lexically without following symlinks. Isolation still comes from the operating system.
+The rationale and full semantics are in [policy-design.md](./policy-design.md).
+
 ## Common configurations
 
 ### Local OpenAI-compatible server

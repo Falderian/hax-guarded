@@ -43,6 +43,7 @@ test_sources = [
     'test_loopback.c',
     'test_oneshot.c',
     'test_paste_image.c',
+    'test_policy.c',
     'test_provider.c',
     'test_select_config.c',
     'test_select_model.c',

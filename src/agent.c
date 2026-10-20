@@ -992,6 +992,10 @@ static struct item repl_loop_tool_call(const struct item *call, enum agent_loop_
 {
     struct repl_loop_ctx *ctx = user;
     struct render_ctx *render = ctx->state->render;
+    if (action == AGENT_LOOP_TOOL_DENY) {
+        render_set_mode(render, RENDER_IDLE);
+        return dispatch_tool_denied(render, call);
+    }
     if (action == AGENT_LOOP_TOOL_REFUSE) {
         render_set_mode(render, RENDER_IDLE);
         return dispatch_tool_refused(render, call);

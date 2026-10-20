@@ -788,3 +788,29 @@ int bash_command_is_exploration(const char *command)
     return for_each_segment(command, classify_segment_callback, &state) &&
            state.has_substantive_command;
 }
+
+int bash_command_has_composition(const char *command)
+{
+    return command ? command_has_disqualifier(command) : 0;
+}
+
+struct statement_visit {
+    bash_statement_fn fn;
+    void *user;
+};
+
+static int statement_visit_callback(const char *segment, const char *segment_end,
+                                    enum command_separator previous_separator, void *user_data)
+{
+    (void)previous_separator;
+    struct statement_visit *visit = user_data;
+    return visit->fn(segment, (size_t)(segment_end - segment), visit->user);
+}
+
+void bash_for_each_statement(const char *command, bash_statement_fn fn, void *user)
+{
+    if (!command || !fn)
+        return;
+    struct statement_visit visit = {.fn = fn, .user = user};
+    for_each_segment(command, statement_visit_callback, &visit);
+}

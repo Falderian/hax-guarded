@@ -9,6 +9,7 @@
 #include "agent_usage.h"
 #include "compact.h"
 #include "model_meta.h"
+#include "policy.h"
 #include "provider.h"
 #include "session.h"
 #include "tool.h"
@@ -206,6 +207,13 @@ static struct item loop_run_tool(const struct agent_loop_params *params, const s
     struct item result;
     if (hooks->tool_call) {
         result = hooks->tool_call(call, action, image_input, hooks->user);
+    } else if (action == AGENT_LOOP_TOOL_DENY) {
+        /* A policy denial carries its reason; a hookless frontend still owes the same provenance
+         * as the interactive one, and the call never reaches the tool. */
+        char *reason = policy_deny_reason(call);
+        result = agent_tool_result_make(call, reason ? reason : REFUSED_RESULT, NULL);
+        free(reason);
+        result.origin = ITEM_ORIGIN_REFUSED;
     } else if (action == AGENT_LOOP_TOOL_REFUSE) {
         /* Hookless execution owes the same provenance as frontend-rendered results: the action,
          * not the presentation path, determines whether the call was dispatched. */
@@ -412,6 +420,8 @@ static void loop_run_active(const struct agent_loop_params *params,
                 action = AGENT_LOOP_TOOL_REFUSE;
             else if (sig == AGENT_LOOP_SIG_ABORT)
                 action = AGENT_LOOP_TOOL_SKIP;
+            else if (policy_denies(&session->items[i]))
+                action = AGENT_LOOP_TOOL_DENY;
             struct item tool_result = loop_run_tool(params, &session->items[i], action);
             agent_session_append(session, tool_result);
         }
