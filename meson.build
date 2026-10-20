@@ -94,6 +94,7 @@ sources = files(
     'src/model_sort.c',
     'src/oneshot.c',
     'src/paste_image.c',
+    'src/policy.c',
     'src/provider.c',
     'src/select.c',
     'src/session.c',
@@ -161,6 +162,7 @@ sources = files(
     'src/system/spawn.c',
     'src/system/tempfiles.c',
 
+    'src/terminal/approve.c',
     'src/terminal/clipboard.c',
     'src/terminal/input.c',
     'src/terminal/input_core.c',

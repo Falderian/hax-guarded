@@ -10,3 +10,9 @@ __pycache__/
 
 # clang static-analyzer output
 *.plist
+
+# makepkg working tree and artifacts under packaging/
+/packaging/src/
+/packaging/pkg/
+/packaging/hax-guarded-git/
+/packaging/*.pkg.tar.*

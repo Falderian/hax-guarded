@@ -508,6 +508,7 @@ struct loop_test_ctx {
     int tools_run;
     int tools_skipped;
     int tools_refused;
+    int tools_asked;
     int turn_begins;
     int compactions;
     int checkpoints;
@@ -544,6 +545,13 @@ static struct item run_test_tool(const struct item *call, enum agent_loop_tool_a
         struct item skipped = agent_tool_result_make(call, INTERRUPT_MARKER, NULL);
         skipped.origin = ITEM_ORIGIN_SKIPPED;
         return skipped;
+    }
+    if (action == AGENT_LOOP_TOOL_ASK) {
+        ctx->tools_asked++;
+        struct item declined =
+            agent_tool_result_make(call, "error: denied by policy: user declined", NULL);
+        declined.origin = ITEM_ORIGIN_REFUSED;
+        return declined;
     }
     ctx->tools_refused++;
     struct item refused = agent_tool_result_make(call, "refused", NULL);
@@ -798,6 +806,63 @@ static void test_hookless_fallback_stamps_origins(void)
     EXPECT(skipped->origin == ITEM_ORIGIN_SKIPPED);
     agent_loop_result_destroy(&cancelled);
     agent_session_free(&session);
+}
+
+/* Ask mode without an approval channel must fail closed: the call is never dispatched, and the
+ * refusal keeps explicit provenance so replay cannot present it as executed. */
+static void test_loop_hookless_ask_fails_closed(void)
+{
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\",\"fail_closed\":true}}") == 0);
+    struct agent_session session;
+    session_init(&session);
+    session_enable_tools(&session);
+    agent_session_add_user(&session, "start");
+    struct provider provider = {.name = "test", .stream = chain_stream};
+    struct loop_test_ctx ctx = {0};
+    chain_turn = 0;
+    chain_two_tools = 0;
+
+    struct agent_loop_result result = run_chain_hookless(&session, &provider, &ctx, 4);
+    const struct item *refusal = NULL;
+    for (size_t i = 0; i < session.n_items; i++)
+        if (session.items[i].kind == ITEM_TOOL_RESULT)
+            refusal = &session.items[i];
+    EXPECT(refusal != NULL);
+    EXPECT_STR_EQ(refusal->output,
+                  "error: denied by policy: approval required but no interactive frontend");
+    EXPECT(refusal->origin == ITEM_ORIGIN_REFUSED);
+    agent_loop_result_destroy(&result);
+    agent_session_free(&session);
+    EXPECT(config_load(NULL) == 0);
+}
+
+/* The hook, not the loop, owns the decision: ask mode reaches it once and whatever it records
+ * is what history keeps. */
+static void test_loop_ask_reaches_hook(void)
+{
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\"}}") == 0);
+    struct agent_session session;
+    session_init(&session);
+    session_enable_tools(&session);
+    agent_session_add_user(&session, "start");
+    struct provider provider = {.name = "test", .stream = chain_stream};
+    struct loop_test_ctx ctx = {0};
+    chain_turn = 0;
+    chain_two_tools = 0;
+
+    struct agent_loop_result result = run_chain(&session, &provider, &ctx, 4);
+    EXPECT(result.outcome == AGENT_LOOP_COMPLETE);
+    EXPECT(ctx.tools_asked == 1 && ctx.tools_run == 0);
+    const struct item *declined = NULL;
+    for (size_t i = 0; i < session.n_items; i++)
+        if (session.items[i].kind == ITEM_TOOL_RESULT)
+            declined = &session.items[i];
+    EXPECT(declined != NULL);
+    EXPECT_STR_EQ(declined->output, "error: denied by policy: user declined");
+    EXPECT(declined->origin == ITEM_ORIGIN_REFUSED);
+    agent_loop_result_destroy(&result);
+    agent_session_free(&session);
+    EXPECT(config_load(NULL) == 0);
 }
 
 static void test_loop_pause_runs_whole_batch(void)
@@ -1415,6 +1480,8 @@ int main(void)
     test_loop_cancels_tool_batch();
     test_loop_cancel_still_refuses_disabled_tool();
     test_hookless_fallback_stamps_origins();
+    test_loop_hookless_ask_fails_closed();
+    test_loop_ask_reaches_hook();
     test_loop_pause_runs_whole_batch();
     test_loop_pause_preempts_empty_turn();
     test_loop_pause_preempts_follow_up_leaves_no_boundary();

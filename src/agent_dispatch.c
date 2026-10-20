@@ -284,12 +284,17 @@ struct item dispatch_tool_refused(struct render_ctx *render, const struct item *
     return dispatch_without_run(render, call, REFUSED_MARKER, REFUSED_RESULT, ITEM_ORIGIN_REFUSED);
 }
 
+struct item dispatch_tool_denied_reason(struct render_ctx *render, const struct item *call,
+                                        const char *reason)
+{
+    return dispatch_without_run(render, call, DENIED_MARKER, reason ? reason : REFUSED_RESULT,
+                                ITEM_ORIGIN_REFUSED);
+}
+
 struct item dispatch_tool_denied(struct render_ctx *render, const struct item *call)
 {
     char *reason = policy_deny_reason(call);
-    struct item result =
-        dispatch_without_run(render, call, DENIED_MARKER, reason ? reason : REFUSED_RESULT,
-                             ITEM_ORIGIN_REFUSED);
+    struct item result = dispatch_tool_denied_reason(render, call, reason);
     free(reason);
     return result;
 }

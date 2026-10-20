@@ -21,6 +21,10 @@ struct item dispatch_tool_refused(struct render_ctx *render, const struct item *
 /* Render a call denied by policy, carrying the denial reason as its result. */
 struct item dispatch_tool_denied(struct render_ctx *render, const struct item *call);
 
+/* Same, with a caller-supplied reason (for example an operator's refusal note). */
+struct item dispatch_tool_denied_reason(struct render_ctx *render, const struct item *call,
+                                        const char *reason);
+
 /* Render a call as a collapsed breadcrumb without executing it. */
 void render_collapsed_tool_call(struct render_ctx *render, const struct item *call);
 

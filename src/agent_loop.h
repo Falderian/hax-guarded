@@ -65,6 +65,8 @@ enum agent_loop_tool_action {
     AGENT_LOOP_TOOL_RUN,
     AGENT_LOOP_TOOL_REFUSE,
     AGENT_LOOP_TOOL_SKIP,
+    /* The frontend must obtain approval before running. A hookless frontend denies. */
+    AGENT_LOOP_TOOL_ASK,
     AGENT_LOOP_TOOL_DENY,
 };
 

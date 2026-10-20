@@ -25,6 +25,7 @@ enum policy_mode {
     POLICY_OFF,
     POLICY_DENY_LIST,
     POLICY_ALLOW_LIST,
+    POLICY_ASK,
 };
 
 static const json_t *policy_block(void)
@@ -52,6 +53,8 @@ static enum policy_mode policy_mode(const json_t *block, int *malformed_out)
         return POLICY_DENY_LIST;
     if (strcmp(value, "allow-list") == 0)
         return POLICY_ALLOW_LIST;
+    if (strcmp(value, "ask") == 0)
+        return POLICY_ASK;
     *malformed_out = 1;
     return POLICY_OFF;
 }
@@ -159,9 +162,10 @@ static const char *strip_prefixes(const char *statement, size_t *length_in_out)
 
 /* Match a pattern at the start of the statement body on token boundaries, so `git status` accepts
  * `git status --short` and rejects `git stash`. */
-static int statement_matches(const char *statement, size_t length, const char *pattern)
+static int statement_matches_with(const char *statement, size_t length, const char *pattern,
+                                  int strip_wrappers)
 {
-    const char *body = strip_prefixes(statement, &length);
+    const char *body = strip_wrappers ? strip_prefixes(statement, &length) : statement;
     const char *cursor = pattern;
     while (*cursor) {
         while (*cursor == ' ' || *cursor == '\t')
@@ -186,6 +190,11 @@ static int statement_matches(const char *statement, size_t length, const char *p
         cursor = pattern_end;
     }
     return 1;
+}
+
+static int statement_matches(const char *statement, size_t length, const char *pattern)
+{
+    return statement_matches_with(statement, length, pattern, 1);
 }
 
 struct command_scan {
@@ -320,16 +329,49 @@ static int path_denied(const json_t *paths, const char *tool, const char *raw)
     return denied;
 }
 
-int policy_denies(const struct item *call)
-{
-    const json_t *block = policy_block();
-    int malformed = 0;
-    enum policy_mode mode = policy_mode(block, &malformed);
-    if (malformed)
-        return json_is_true(json_object_get(block, "fail_closed"));
-    if (mode == POLICY_OFF || !call || call->kind != ITEM_TOOL_CALL || !call->tool_name)
-        return 0;
+/* --- session grants ---------------------------------------------------------------- */
 
+#define SESSION_GRANT_LIMIT 256
+
+static char *session_grants[SESSION_GRANT_LIMIT];
+static size_t session_grant_count;
+
+static char *call_signature(const struct item *call)
+{
+    return xasprintf("%s\x1f%s", call->tool_name ? call->tool_name : "",
+                     call->tool_arguments_json ? call->tool_arguments_json : "");
+}
+
+static int session_granted(const struct item *call)
+{
+    char *signature = call_signature(call);
+    int granted = 0;
+    for (size_t i = 0; i < session_grant_count && !granted; i++)
+        granted = strcmp(session_grants[i], signature) == 0;
+    free(signature);
+    return granted;
+}
+
+void policy_grant_session(const struct item *call)
+{
+    if (!call || !call->tool_name || session_grant_count >= SESSION_GRANT_LIMIT)
+        return;
+    if (session_granted(call))
+        return;
+    session_grants[session_grant_count++] = call_signature(call);
+}
+
+void policy_clear_session(void)
+{
+    for (size_t i = 0; i < session_grant_count; i++)
+        free(session_grants[i]);
+    session_grant_count = 0;
+}
+
+/* --- decisions --------------------------------------------------------------------- */
+
+static int listed_denied(enum policy_mode mode, const json_t *block, const struct item *call)
+{
     const json_t *tools = json_object_get(block, "tools");
     const char *name = call->tool_name;
     int tool_denied = mode == POLICY_DENY_LIST
@@ -354,9 +396,85 @@ int policy_denies(const struct item *call)
     return tool_denied;
 }
 
+enum policy_verdict policy_verdict(const struct item *call)
+{
+    const json_t *block = policy_block();
+    int malformed = 0;
+    enum policy_mode mode = policy_mode(block, &malformed);
+    if (malformed)
+        return json_is_true(json_object_get(block, "fail_closed")) ? POLICY_VERDICT_DENY
+                                                                   : POLICY_VERDICT_RUN;
+    if (mode == POLICY_OFF || !call || call->kind != ITEM_TOOL_CALL || !call->tool_name)
+        return POLICY_VERDICT_RUN;
+    if (mode == POLICY_ASK)
+        return session_granted(call) ? POLICY_VERDICT_RUN : POLICY_VERDICT_ASK;
+    return listed_denied(mode, block, call) ? POLICY_VERDICT_DENY : POLICY_VERDICT_RUN;
+}
+
+int policy_denies(const struct item *call)
+{
+    return policy_verdict(call) == POLICY_VERDICT_DENY;
+}
+
 char *policy_deny_reason(const struct item *call)
 {
     if (!policy_denies(call))
         return NULL;
     return xasprintf("error: denied by policy: %s", call->tool_name);
+}
+
+/* --- dangerous commands ------------------------------------------------------------ */
+
+struct dangerous_scan {
+    const char **patterns;
+    size_t count;
+    int matched;
+};
+
+/* Match both the literal statement and the wrapper-stripped form, so `sudo rm` trips on either
+ * `sudo` or `rm` no matter which one the operator listed. */
+static int dangerous_visit(const char *statement, size_t length, void *user)
+{
+    struct dangerous_scan *scan = user;
+    for (size_t i = 0; i < scan->count && !scan->matched; i++) {
+        if (statement_matches_with(statement, length, scan->patterns[i], 0) ||
+            statement_matches_with(statement, length, scan->patterns[i], 1))
+            scan->matched = 1;
+    }
+    return 1;
+}
+
+char *policy_call_detail(const struct item *call)
+{
+    if (!call || call->kind != ITEM_TOOL_CALL || !call->tool_name)
+        return NULL;
+    if (strcmp(call->tool_name, "bash") == 0)
+        return arg_string(call->tool_arguments_json, "command");
+    if (is_path_tool(call->tool_name))
+        return arg_string(call->tool_arguments_json, "path");
+    return call->tool_arguments_json ? xstrdup(call->tool_arguments_json) : NULL;
+}
+
+int policy_is_dangerous(const struct item *call)
+{
+    const json_t *block = policy_block();
+    if (!block || !call || call->kind != ITEM_TOOL_CALL || !call->tool_name)
+        return 0;
+    if (strcmp(call->tool_name, "bash") != 0)
+        return 0;
+    char *command = arg_string(call->tool_arguments_json, "command");
+    if (!command)
+        return 0;
+    size_t count = 0;
+    const json_t *bash = json_object_get(block, "bash");
+    const char **patterns = string_array(json_object_get(bash, "dangerous_commands"), &count);
+    int dangerous = 0;
+    if (patterns) {
+        struct dangerous_scan scan = {.patterns = patterns, .count = count};
+        bash_for_each_statement(command, dangerous_visit, &scan);
+        dangerous = scan.matched;
+        free(patterns);
+    }
+    free(command);
+    return dangerous;
 }

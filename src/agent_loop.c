@@ -207,6 +207,11 @@ static struct item loop_run_tool(const struct agent_loop_params *params, const s
     struct item result;
     if (hooks->tool_call) {
         result = hooks->tool_call(call, action, image_input, hooks->user);
+    } else if (action == AGENT_LOOP_TOOL_ASK) {
+        /* A hookless frontend has no approval channel, so an unapproved call fails closed. */
+        result = agent_tool_result_make(
+            call, "error: denied by policy: approval required but no interactive frontend", NULL);
+        result.origin = ITEM_ORIGIN_REFUSED;
     } else if (action == AGENT_LOOP_TOOL_DENY) {
         /* A policy denial carries its reason; a hookless frontend still owes the same provenance
          * as the interactive one, and the call never reaches the tool. */
@@ -420,8 +425,13 @@ static void loop_run_active(const struct agent_loop_params *params,
                 action = AGENT_LOOP_TOOL_REFUSE;
             else if (sig == AGENT_LOOP_SIG_ABORT)
                 action = AGENT_LOOP_TOOL_SKIP;
-            else if (policy_denies(&session->items[i]))
-                action = AGENT_LOOP_TOOL_DENY;
+            else {
+                enum policy_verdict verdict = policy_verdict(&session->items[i]);
+                if (verdict == POLICY_VERDICT_DENY)
+                    action = AGENT_LOOP_TOOL_DENY;
+                else if (verdict == POLICY_VERDICT_ASK)
+                    action = AGENT_LOOP_TOOL_ASK;
+            }
             struct item tool_result = loop_run_tool(params, &session->items[i], action);
             agent_session_append(session, tool_result);
         }

@@ -200,6 +200,84 @@ static void test_statement_split(void)
     EXPECT(!bash_command_has_composition(NULL));
 }
 
+static void test_ask_every_call(void)
+{
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\"}}") == 0);
+    struct item shell = bash_call("ls");
+    EXPECT(policy_verdict(&shell) == POLICY_VERDICT_ASK);
+    EXPECT(!policy_denies(&shell));
+    item_free(&shell);
+
+    struct item read = path_call("read", "/tmp/x");
+    EXPECT(policy_verdict(&read) == POLICY_VERDICT_ASK);
+    item_free(&read);
+    EXPECT(config_load(NULL) == 0);
+}
+
+static void test_ask_grant_is_exact(void)
+{
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\"}}") == 0);
+    policy_clear_session();
+
+    struct item granted = bash_call("ls -la");
+    EXPECT(policy_verdict(&granted) == POLICY_VERDICT_ASK);
+    policy_grant_session(&granted);
+    EXPECT(policy_verdict(&granted) == POLICY_VERDICT_RUN);
+
+    struct item variant = bash_call("ls -la --color");
+    EXPECT(policy_verdict(&variant) == POLICY_VERDICT_ASK);
+    item_free(&variant);
+
+    struct item other_tool = make_call("bash", "{\"command\":\"ls\"}");
+    EXPECT(policy_verdict(&other_tool) == POLICY_VERDICT_ASK);
+    item_free(&other_tool);
+
+    item_free(&granted);
+    policy_clear_session();
+
+    struct item after_clear = bash_call("ls -la");
+    EXPECT(policy_verdict(&after_clear) == POLICY_VERDICT_ASK);
+    item_free(&after_clear);
+    EXPECT(config_load(NULL) == 0);
+}
+
+static void test_ask_never_denies(void)
+{
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\",\"fail_closed\":true}}") == 0);
+    struct item call = bash_call("rm -rf /");
+    EXPECT(policy_verdict(&call) == POLICY_VERDICT_ASK);
+    EXPECT(policy_deny_reason(&call) == NULL);
+    item_free(&call);
+    EXPECT(config_load(NULL) == 0);
+}
+
+static void test_dangerous_commands(void)
+{
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\",\"bash\":{\"dangerous_commands\":"
+                       "[\"sudo\",\"rm\",\"git reset --hard\"]}}}") == 0);
+    const char *dangerous[] = {
+        "sudo ls", "rm -rf /tmp/x", "env X=1 rm -rf y", "cd /tmp && rm -rf z",
+        "git reset --hard HEAD",
+    };
+    for (size_t i = 0; i < sizeof(dangerous) / sizeof(dangerous[0]); i++) {
+        struct item call = bash_call(dangerous[i]);
+        EXPECT(policy_is_dangerous(&call));
+        item_free(&call);
+    }
+
+    const char *safe[] = {"ls -la", "git status", "grep rm file", "echo sudoers"};
+    for (size_t i = 0; i < sizeof(safe) / sizeof(safe[0]); i++) {
+        struct item call = bash_call(safe[i]);
+        EXPECT(!policy_is_dangerous(&call));
+        item_free(&call);
+    }
+
+    struct item read = path_call("read", "/tmp/x");
+    EXPECT(!policy_is_dangerous(&read));
+    item_free(&read);
+    EXPECT(config_load(NULL) == 0);
+}
+
 int main(void)
 {
     test_off_by_default();
@@ -213,6 +291,10 @@ int main(void)
     test_path_traversal();
     test_fail_closed();
     test_statement_split();
+    test_ask_every_call();
+    test_ask_grant_is_exact();
+    test_ask_never_denies();
+    test_dangerous_commands();
 
     T_REPORT();
 }

@@ -71,26 +71,31 @@ Event hooks elsewhere serve a handful of needs, each of which hax answers more d
   ```
 
 What outside scripts cannot express is in-turn interception: vetoing or rewriting a tool call,
-or injecting behavior between a tool result and the next model request. hax omits that
-deliberately rather than claiming a substitute — an in-process event system would add a
-protocol, a config schema, and failure modes to the core loop, and its main use elsewhere is
-per-command approval, covered next.
+or injecting behavior between a tool result and the next model request. hax omits that by default
+rather than claiming a substitute — an in-process event system would add a protocol, a config
+schema, and failure modes to the core loop. The one opt-in exception is the approval gate covered
+next; it decides only whether a call runs, and never rewrites a result or injects content.
 
-### No permission prompts
+### No permission prompts by default
 
-hax deliberately has no per-command approval gate. Such a gate can catch accidents, but it
-earns its keep poorly: it interrupts every step of routine work and trains reflexive approval,
-and because it runs inside the process it guards, it is not a security boundary — the same
-shell, filesystem, and credentials remain one confused command away. Isolation against a
+hax ships no per-command approval gate unless you ask for one. Such a gate can catch accidents,
+but it earns its keep poorly: it interrupts every step of routine work and trains reflexive
+approval, and because it runs inside the process it guards, it is not a security boundary — the
+same shell, filesystem, and credentials remain one confused command away. Isolation against a
 mistaken or compromised process comes from the operating system: run hax in a container or VM
 when working on untrusted input or when the blast radius matters.
 
-What hax provides instead is control and restraint, not enforcement: the default system prompt
+What hax provides by default is control and restraint, not enforcement: the default system prompt
 forbids destructive git operations and tells the model to ask before irreversible actions, Esc
-pauses a running turn for steering, and `max_turns` can bound unattended runs. A config-driven
-`policy` block adds a further restraint — an allow-list over tools, commands, and paths — without
-claiming to be a boundary; it is described in [configuration.md](./configuration.md#tool-call-policy)
-and designed in [policy-design.md](./policy-design.md).
+pauses a running turn for steering, and `max_turns` can bound unattended runs.
+
+An opt-in `policy` block adds more, and it is the one deliberate divergence from this section.
+`mode: "ask"` prompts per call — allow once, allow for the session, or deny with a reason — and
+double-confirms commands listed as dangerous; `deny-list` and `allow-list` are the non-interactive
+alternatives. None of it claims to be a boundary. It is described in
+[configuration.md](./configuration.md#tool-call-policy) and designed in
+[policy-design.md](./policy-design.md). The divergence is recorded here so "why does hax have X?"
+keeps having a written answer.
 
 ### No custom slash commands
 

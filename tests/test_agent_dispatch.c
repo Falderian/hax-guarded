@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include "agent_dispatch.h"
+#include "agent_core.h"
 #include "harness.h"
 #include "provider.h"
 #include "tool.h"
@@ -252,6 +253,38 @@ static void test_hidden_tail_not_displayed_by_fallback(void)
     item_free(&call);
 }
 
+/* A policy denial is rendered and recorded without ever reaching the tool; the operator's reason
+ * is what history keeps, with the generic refusal as the fallback. */
+static void test_policy_denial_records_reason(void)
+{
+    struct item call = {
+        .kind = ITEM_TOOL_CALL,
+        .call_id = xstrdup("call-deny"),
+        .tool_name = xstrdup("write"),
+        .tool_arguments_json = xstrdup("{\"path\":\"/etc/passwd\",\"content\":\"x\"}"),
+    };
+    struct render_ctx render = {.mode = RENDER_IDLE, .spinner = spinner_new(NULL)};
+
+    cap_reset();
+    struct item denied =
+        dispatch_tool_denied_reason(&render, &call, "error: denied by policy: write");
+    const char *cap = cap_read();
+    EXPECT(strstr(cap, DENIED_MARKER) != NULL);
+    EXPECT_STR_EQ(denied.output, "error: denied by policy: write");
+    EXPECT(denied.origin == ITEM_ORIGIN_REFUSED);
+    item_free(&denied);
+
+    cap_reset();
+    struct item fallback = dispatch_tool_denied_reason(&render, &call, NULL);
+    EXPECT_STR_EQ(fallback.output, REFUSED_RESULT);
+    EXPECT(strstr(cap_read(), DENIED_MARKER) != NULL);
+    EXPECT(fallback.origin == ITEM_ORIGIN_REFUSED);
+    item_free(&fallback);
+
+    spinner_free(render.spinner);
+    item_free(&call);
+}
+
 int main(void)
 {
     cap_init();
@@ -260,5 +293,6 @@ int main(void)
     test_visible_content_shows_preview_not_summary();
     test_selector_overrides_non_collapsed_mode();
     test_hidden_tail_not_displayed_by_fallback();
+    test_policy_denial_records_reason();
     T_REPORT();
 }

@@ -102,9 +102,37 @@ credential itself in JSON.
 
 ## Tool-call policy
 
-A `policy` block, nested like `presets` and `catalog.models`, limits which tool calls run. It is
-read from the config file only — there is no environment override and no `/config` editor — and an
-absent block leaves execution unchanged.
+A `policy` block, nested like `presets` and `catalog.models`, decides what happens before a tool
+call runs. It is read from the config file only — there is no environment override and no
+`/config` editor — and an absent block leaves execution unchanged.
+
+```json
+{
+  "policy": {
+    "mode": "ask",
+    "fail_closed": true,
+    "bash": { "dangerous_commands": ["sudo", "rm", "dd", "git reset --hard"] }
+  }
+}
+```
+
+`mode` is `off` (default), `ask`, `deny-list`, or `allow-list`. `ask` is the interactive gate:
+every call prompts with `[a]` allow once, `[s]` allow for the session, and `[d]` deny. A denial
+takes an optional typed reason, which reaches the model as `error: denied by policy: <reason>`;
+Esc or Ctrl-C denies without one. Session grants are exact — approving `git status` does not
+approve `git status --short` — and are dropped when the process exits.
+`bash.dangerous_commands` adds a second confirmation, so `rm -rf` is never one keystroke away; the
+patterns match the literal statement and its wrapper-stripped form, so listing either `sudo` or
+`rm` catches `sudo rm`. A frontend with no prompt, such as `hax -p` or background dispatch, treats
+an approval request as a denial.
+
+`deny-list` and `allow-list` are the non-interactive modes. `deny-list` denies the tools in
+`tools.deny` and the commands matching `bash.deny_commands`; it catches accidents, not intent,
+because it cannot see through shell composition. `allow-list` is a static restraint: a call runs
+only when its tool is in `tools.allow`, every command statement is allowed, and the command
+contains no composition — so `echo $(rm -rf /)` is denied even though `echo` is allowed. A missing
+`tools.allow` under `allow-list` denies everything. `fail_closed` decides what a malformed block
+does.
 
 ```json
 {
@@ -117,19 +145,11 @@ absent block leaves execution unchanged.
 }
 ```
 
-`mode` is `off` (default), `deny-list`, or `allow-list`. `deny-list` denies the tools in
-`tools.deny` and the commands matching `bash.deny_commands`; it catches accidents, not intent,
-because it cannot see through shell composition. `allow-list` is the restraint worth using: a call
-runs only when its tool is in `tools.allow`, every command statement is allowed, and the command
-contains no composition — so `echo $(rm -rf /)` is denied even though `echo` is allowed. A missing
-`tools.allow` under `allow-list` denies everything. `fail_closed` decides what a malformed block
-does.
-
 Commands are split on unquoted `;`, `&&`, `||`, newlines, and pipes, and matched at token
 boundaries, so `git status` accepts `git status --short` and rejects `git stash`; a leading `sudo`
-or `env X=1` is skipped. Path rules apply to `read`, `edit`, and `write`, expand `~`, resolve
-relative paths, and match on path-component boundaries. Denied calls return
-`error: denied by policy: <tool>` to the model and render a `[denied by policy]` row.
+or `env X=1` is skipped when matching. Path rules apply to `read`, `edit`, and `write`, expand `~`,
+resolve relative paths, and match on path-component boundaries. A static denial returns
+`error: denied by policy: <tool>` to the model and renders a `[denied by policy]` row.
 
 This is a guard against mistakes, not a security boundary: a permitted `sh`, `python`, or `make`
 is a general escape, value-bearing wrapper flags (`sudo -u root rm`) are not resolved, and paths
