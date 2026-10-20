@@ -2,7 +2,7 @@
 # Fork of the hax AUR package for the guardrails-policy branch. The upstream package is `hax`,
 # maintained by the original author; this one keeps its own name so the two can never be confused.
 pkgname=hax-guarded-git
-pkgver=0.6.1.bfefd1e
+pkgver=0.6.1.r419.53baf1b
 pkgrel=1
 pkgdesc="Minimalist, terminal-native coding agent written in C, with a config-driven tool-call policy"
 arch=('x86_64' 'aarch64')
@@ -15,11 +15,11 @@ conflicts=('hax' 'hax-bin' 'hax-git')
 source=("$pkgname::git+https://github.com/Falderian/hax-guarded.git#branch=guardrails-policy")
 sha256sums=('SKIP')
 
+# The base version must be bumped by hand when upstream tags a release: makepkg's git handler
+# clones a single branch and fetches no tags, so `git describe` has nothing to name here.
 pkgver() {
     cd "$srcdir/$pkgname"
-    local tag
-    tag=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
-    printf '%s.%s' "${tag:-0}" "$(git rev-parse --short HEAD)"
+    printf '0.6.1.r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
 }
 
 build() {
