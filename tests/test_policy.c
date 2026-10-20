@@ -224,6 +224,7 @@ static void test_ask_trusted_stays_inside(void)
 
     const char *quiet[] = {
         "ls", "ls -la src", "rg -n main src/main.c", "ls 2>/dev/null", "git status",
+        "bash -c 'ls src'", "ls $PWD", "X=1 env",
     };
     for (size_t i = 0; i < sizeof(quiet) / sizeof(quiet[0]); i++) {
         struct item call = bash_call(quiet[i]);
@@ -241,6 +242,12 @@ static void test_ask_trusted_stays_inside(void)
         "make --output=/tmp/out",
         "X=/tmp/x env",
         "cat $HOME/.bashrc",
+        "bash -c 'ls /etc'",
+        "bash -c 'ls ~/Downloads'",
+        "X=~; ls $X",
+        "cd; ls",
+        "cd && ls",
+        "ls $UNSET",
     };
     for (size_t i = 0; i < sizeof(outside) / sizeof(outside[0]); i++) {
         struct item call = bash_call(outside[i]);
@@ -261,6 +268,42 @@ static void test_ask_trusted_stays_inside(void)
     EXPECT(policy_verdict(&wait) == POLICY_VERDICT_RUN);
     item_free(&wait);
 
+    policy_set_workspace_root(NULL);
+    policy_set_trusted(0);
+    EXPECT(config_load(NULL) == 0);
+}
+
+/* A `this session` answer stops the same call asking again, for the process only. */
+static void test_ask_session_grant(void)
+{
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\"}}") == 0);
+    char root[4096];
+    EXPECT(getcwd(root, sizeof root) != NULL);
+    policy_set_trusted(1);
+    policy_set_workspace_root(root);
+    policy_clear_session();
+
+    struct item first = bash_call("ls /etc");
+    EXPECT(policy_verdict(&first) == POLICY_VERDICT_ASK);
+    policy_grant_session(&first);
+    EXPECT(policy_verdict(&first) == POLICY_VERDICT_RUN);
+
+    struct item same = bash_call("ls /etc");
+    EXPECT(policy_verdict(&same) == POLICY_VERDICT_RUN);
+    struct item changed = bash_call("ls /tmp");
+    EXPECT(policy_verdict(&changed) == POLICY_VERDICT_ASK);
+
+    policy_set_trusted(0);
+    EXPECT(policy_verdict(&same) == POLICY_VERDICT_DENY);
+
+    policy_clear_session();
+    policy_set_trusted(1);
+    EXPECT(policy_verdict(&same) == POLICY_VERDICT_ASK);
+
+    item_free(&first);
+    item_free(&same);
+    item_free(&changed);
+    policy_clear_session();
     policy_set_workspace_root(NULL);
     policy_set_trusted(0);
     EXPECT(config_load(NULL) == 0);
@@ -366,6 +409,7 @@ int main(void)
     test_statement_split();
     test_ask_trust_required();
     test_ask_trusted_stays_inside();
+    test_ask_session_grant();
     test_ask_trusted_dangerous_confirms();
     test_ask_untrusted_read_only();
     test_dangerous_commands();

@@ -1004,16 +1004,26 @@ static struct item repl_loop_tool_asked(struct repl_loop_ctx *ctx, const struct 
         interrupt_disarm();
     int dangerous = policy_is_dangerous(call);
     enum approve_kind kind = dangerous ? APPROVE_DANGEROUS : APPROVE_OUTSIDE;
-    int allowed = interactive && approve_run(kind, call->tool_name, detail);
+    char *reason = NULL;
+    enum approve_choice choice =
+        interactive ? approve_ask(kind, call->tool_name, detail, &reason) : APPROVE_DENY;
     if (interactive)
         interrupt_arm();
     free(detail);
-    if (allowed)
+    if (choice == APPROVE_SESSION)
+        policy_grant_session(call);
+    if (choice == APPROVE_ONCE || choice == APPROVE_SESSION)
         return dispatch_tool_call(render, call, image_input);
-    return dispatch_tool_denied_reason(
-        render, call, dangerous
-                            ? "error: denied by policy: dangerous command not confirmed"
-                            : "error: denied by policy: outside the trusted folder, not confirmed");
+    char *message = reason
+                        ? xasprintf("error: denied by policy: %s", reason)
+                        : xstrdup(dangerous
+                                      ? "error: denied by policy: dangerous command not confirmed"
+                                      : "error: denied by policy: outside the trusted folder, "
+                                        "not confirmed");
+    struct item denied = dispatch_tool_denied_reason(render, call, message);
+    free(message);
+    free(reason);
+    return denied;
 }
 
 static struct item repl_loop_tool_call(const struct item *call, enum agent_loop_tool_action action,

@@ -128,10 +128,20 @@ read-only — `read` may only touch paths inside the root, `task_wait` runs, and
 `[a]` records the root in `<state>/hax/trust.json`, so later runs in that worktree skip the prompt,
 including `hax -p`. `[t]` lasts for the process only. Delete the file, or its entry, to revoke.
 
-`bash.dangerous_commands` overrides the containment exemption: a match prints the command and
-waits for `y`, so `rm -rf` inside the folder is never one keystroke away. Patterns match the literal
-statement and its wrapper-stripped form, so listing either `sudo` or `rm` catches `sudo rm`. A
-non-interactive run cannot confirm, so a dangerous command there is denied.
+Every escalation — a dangerous command or one that leaves the folder — offers the same four
+answers:
+
+```
+  OUTSIDE THE FOLDER bash: ls -la ~/Downloads
+  [y] once  [s] this session  [n] deny  [r] deny with reason
+```
+
+`[y]` runs this one call, `[s]` runs it and stops asking for that exact tool and arguments until
+the process exits (a changed argument asks again), `[n]` denies, and `[r]` denies with a line of
+text that reaches the model as `error: denied by policy: <reason>` so the next step can account
+for it. Patterns match the literal statement and its wrapper-stripped form, so listing either
+`sudo` or `rm` catches `sudo rm`. A non-interactive run cannot confirm, so an escalated call there
+is denied.
 
 `deny-list` and `allow-list` are the static modes and ignore folder trust. `deny-list` denies the
 tools in `tools.deny` and the commands matching `bash.deny_commands`; it catches accidents, not

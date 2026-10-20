@@ -61,12 +61,19 @@ The two answers define the mode:
 
 - **Trusted** — tools run without prompting while they stay inside the folder. `bash` is scanned
   for path-shaped words (including `~/`, `..`, redirections, `--flag=path`, and `$HOME`); a word
-  that normalizes outside the root escalates to a `y/N` labelled `OUTSIDE THE FOLDER`, and the
+  that normalizes outside the root escalates to a prompt labelled `OUTSIDE THE FOLDER`, and the
   same applies to a `read`/`edit`/`write` path outside it. `bash.dangerous_commands` is the second
-  exception: a match asks `DANGEROUS bash: …` with `y/N`, even inside the folder.
+  exception: a match asks `DANGEROUS bash: …`, even inside the folder.
 - **Untrusted** — read-only. `read` runs only when its path normalizes inside the root,
   `task_wait` runs, and `bash`, `edit` and `write` are denied without prompting. The denial names
   the reason so the model stops retrying and tells the operator to trust the folder.
+
+An escalation offers `[y] once`, `[s] this session`, `[n] deny`, or `[r] deny with reason`. The
+session answer records the exact `(tool, arguments)` pair in process memory, so the same call runs
+silently until exit while a changed argument asks again — that is what keeps a workflow that
+legitimately reaches outside (`rg ~/notes`) from prompting on every turn. The reason, when given,
+becomes the model-facing denial (`error: denied by policy: <reason>`) instead of the canned one, so
+the model can choose a different approach rather than retry.
 
 `[a]` persists the root in `<state>/hax/trust.json`, an auto-managed file kept out of `config.json`
 so `/config` writes and hand edits never collide with it. `[t]` lasts for the process. A
@@ -75,9 +82,11 @@ the folder is already recorded — the same config, bounded for unattended use.
 
 Dangerous matching considers both the literal statement and its wrapper-stripped form, so `sudo
 rm` trips whichever of the two is listed, and a non-interactive run denies rather than confirms.
-Containment is a token scan, not a sandbox: it catches explicit paths, and it deliberately does
-not try to model commands whose targets are implicit (`git config --global`, a bare `cd`), which
-is why trust is still asked for per folder.
+Containment is a token scan, not a sandbox. It re-scans quoted arguments (`bash -c 'ls /etc'`),
+treats any `$` expansion except `$PWD` and any assignment value as unknown, and escalates a bare
+`cd`, which would land in `$HOME`. What it still cannot see is a command whose target is implicit
+(`git config --global`) or a path assembled from data rather than written as a literal, which is
+why trust is still asked for per folder.
 
 ### Terminal ownership
 
@@ -269,7 +278,11 @@ inversion is unwanted, the alternative is a reason parameter on the `tool_call` 
   (`$(…)`, backticks, `<<<`, `&`) denied; `ls 2>/dev/null` allowed; malformed arguments denied.
 - Paths: component-boundary matching, `write_only`, and `..` collapse.
 - `fail_closed` on a malformed block.
-- Ask, trusted: `ls`, `rg -n main src/main.c`, `ls 2>/dev/null` and `git status` run; `ls -la
+- Ask, trusted: `ls`, `rg -n main src/main.c`, `ls 2>/dev/null`, `git status`, `bash -c 'ls src'`
+  and `ls $PWD` run; quoted payloads (`bash -c 'ls /etc'`), assignment tildes (`X=~; ls $X`), a bare
+  `cd` (alone or before `&&`), and any other `$` expansion escalate. A granted
+  call runs a second time while a changed argument asks again, and a grant never applies to an
+  untrusted folder; `ls -la
   ~/Downloads`, `cat /etc/passwd`, `cat</etc/passwd`, `cd ~/ && ls`, `> /tmp/x`, `--out=/tmp/x`,
   `X=/tmp/x env` and `$HOME/.bashrc` escalate, as does an out-of-root path tool; dangerous commands
   escalate even inside the root.
@@ -290,7 +303,7 @@ inversion is unwanted, the alternative is a reason parameter on the `tool_call` 
 
 ## Cost
 
-Roughly 1120 lines: 530 in the policy module, 90 across `keyread`/`approve`/`trust_prompt`, 100
+Roughly 1180 lines: 570 in the policy module, 90 across `keyread`/`approve`/`trust_prompt`, 100
 for the trust store and gate, 20 in `bash_classify`, 80 of wiring, 300 of tests, 80 of
 documentation. Eight files added, no new dependency, still one binary.
 

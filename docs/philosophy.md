@@ -91,7 +91,8 @@ pauses a running turn for steering, and `max_turns` can bound unattended runs.
 
 An opt-in `policy` block adds more, and it is the one deliberate divergence from this section.
 `mode: "ask"` asks once per folder — trust this session, trust always, or stay read-only — and
-then only interrupts for a command that leaves the folder or matches the dangerous list;
+then only interrupts for a command that leaves the folder or matches the dangerous list, and lets
+that answer stick for the session or carry a reason the model can act on;
 `deny-list` and `allow-list` are the non-interactive alternatives. Asking once at launch rather than at every call keeps the gate where the decision
 actually is: whether this project should run code at all. None of it claims to be a boundary. It is described in
 [configuration.md](./configuration.md#tool-call-policy) and designed in

@@ -377,6 +377,49 @@ static const char *workspace_root(void)
     return workspace_root_cache;
 }
 
+/* --- session grants ---------------------------------------------------------------- */
+
+#define MAX_SESSION_GRANTS 64
+
+struct session_grant {
+    char *tool;
+    char *arguments;
+};
+
+static struct session_grant session_grants[MAX_SESSION_GRANTS];
+static size_t n_session_grants;
+
+int policy_session_granted(const struct item *call)
+{
+    if (!call || !call->tool_name || !call->tool_arguments_json)
+        return 0;
+    for (size_t i = 0; i < n_session_grants; i++)
+        if (strcmp(session_grants[i].tool, call->tool_name) == 0 &&
+            strcmp(session_grants[i].arguments, call->tool_arguments_json) == 0)
+            return 1;
+    return 0;
+}
+
+void policy_grant_session(const struct item *call)
+{
+    if (!call || !call->tool_name || !call->tool_arguments_json)
+        return;
+    if (policy_session_granted(call) || n_session_grants == MAX_SESSION_GRANTS)
+        return;
+    session_grants[n_session_grants].tool = xstrdup(call->tool_name);
+    session_grants[n_session_grants].arguments = xstrdup(call->tool_arguments_json);
+    n_session_grants++;
+}
+
+void policy_clear_session(void)
+{
+    for (size_t i = 0; i < n_session_grants; i++) {
+        free(session_grants[i].tool);
+        free(session_grants[i].arguments);
+    }
+    n_session_grants = 0;
+}
+
 /* Symlinks are not resolved, matching the documented limit of the path matcher. */
 static int path_inside_workspace(const char *path)
 {
@@ -418,24 +461,24 @@ static int word_inside_workspace(const char *word)
         return value ? word_inside_workspace(value + 1) : 1;
     }
     const char *value = strchr(word, '=');
-    const char *slash = strchr(word, '/');
-    if (value && slash && slash > value)
+    if (value)
         return word_inside_workspace(value + 1);
     if (strstr(word, "://"))
         return 1;
     if (is_neutral_device(word))
         return 1;
-    if (strstr(word, "$HOME") || strstr(word, "${HOME}"))
-        return 0;
+    if (strchr(word, '$'))
+        return strcmp(word, "$PWD") == 0 || strcmp(word, "${PWD}") == 0;
     if (word[0] == '~' && word[1] && word[1] != '/')
         return 0;
     return path_inside_workspace(word);
 }
 
 /* Best effort: every word that looks like a path must normalize inside the root. Words that are
- * plain names resolve against the working directory, which the caller already keeps inside. The
- * documented gaps are commands whose targets are implicit (`git config --global`, `cd` alone) and
- * variables other than $HOME, which are assumed harmless. */
+ * plain names resolve against the working directory, which the caller already keeps inside.
+ * Quoted arguments are re-scanned because a payload such as `bash -c 'ls /etc'` arrives as one
+ * word. The documented gaps are commands whose targets are implicit (`git config --global`) and
+ * paths assembled from data rather than written as literals. */
 static int bash_inside_workspace(const char *command)
 {
     if (!command)
@@ -443,6 +486,9 @@ static int bash_inside_workspace(const char *command)
     char word[PATH_MAX];
     size_t n = 0;
     char quote = 0;
+    int quoted = 0;
+    int at_start = 1;
+    int bare_cd = 0;
     int inside = 1;
     const char *cursor = command;
     for (;;) {
@@ -457,6 +503,7 @@ static int bash_inside_workspace(const char *command)
         }
         if (c == '\'' || c == '"') {
             quote = c;
+            quoted = 1;
             cursor++;
             continue;
         }
@@ -469,9 +516,26 @@ static int bash_inside_workspace(const char *command)
         }
         word[n] = '\0';
         n = 0;
-        if (!word_inside_workspace(word)) {
-            inside = 0;
-            break;
+        int statement_end = c == '\0' || c == ';' || c == '|' || c == '&' || c == '\n';
+        if (*word) {
+            /* A bare `cd` goes home; an argument makes it a normal path word. */
+            bare_cd = at_start && strcmp(word, "cd") == 0;
+            at_start = 0;
+            int ok = quoted && strchr(word, ' ') ? bash_inside_workspace(word)
+                                                 : word_inside_workspace(word);
+            quoted = 0;
+            if (!ok) {
+                inside = 0;
+                break;
+            }
+        }
+        if (statement_end) {
+            if (bare_cd) {
+                inside = 0;
+                break;
+            }
+            at_start = 1;
+            bare_cd = 0;
         }
         if (!c)
             break;
@@ -520,6 +584,8 @@ enum policy_verdict policy_verdict(const struct item *call)
         return POLICY_VERDICT_RUN;
     if (mode == POLICY_ASK) {
         if (policy_trusted) {
+            if (policy_session_granted(call))
+                return POLICY_VERDICT_RUN;
             if (policy_is_dangerous(call))
                 return POLICY_VERDICT_ASK;
             if (strcmp(call->tool_name, "bash") == 0) {
