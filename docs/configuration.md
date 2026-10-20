@@ -116,23 +116,30 @@ call runs. It is read from the config file only — there is no environment over
 }
 ```
 
-`mode` is `off` (default), `ask`, `deny-list`, or `allow-list`. `ask` is the interactive gate:
-every call prompts with `[a]` allow once, `[s]` allow for the session, and `[d]` deny. A denial
-takes an optional typed reason, which reaches the model as `error: denied by policy: <reason>`;
-Esc or Ctrl-C denies without one. Session grants are exact — approving `git status` does not
-approve `git status --short` — and are dropped when the process exits.
-`bash.dangerous_commands` adds a second confirmation, so `rm -rf` is never one keystroke away; the
-patterns match the literal statement and its wrapper-stripped form, so listing either `sudo` or
-`rm` catches `sudo rm`. A frontend with no prompt, such as `hax -p` or background dispatch, treats
-an approval request as a denial.
+`mode` is `off` (default), `ask`, `deny-list`, or `allow-list`. `ask` gates the **folder**, not
+each call: at launch hax resolves the workspace root (the git worktree root, else the working
+directory) and asks `[t] this session`, `[a] always`, or `[n] no (read-only)`. A trusted folder
+runs tools without asking while they stay inside that root: a `bash` command naming a path outside
+it (`ls ~/Downloads`, `cat /etc/passwd`, `> /tmp/x`, `--out=/tmp/x`) prints the command and waits
+for `y`. A folder answering `n`, or started non-interactively without a recorded trust, is
+read-only — `read` may only touch paths inside the root, `task_wait` runs, and `bash`, `edit` and
+`write` are denied with `error: denied by policy: folder not trusted…` so the model can relay why.
 
-`deny-list` and `allow-list` are the non-interactive modes. `deny-list` denies the tools in
-`tools.deny` and the commands matching `bash.deny_commands`; it catches accidents, not intent,
-because it cannot see through shell composition. `allow-list` is a static restraint: a call runs
-only when its tool is in `tools.allow`, every command statement is allowed, and the command
-contains no composition — so `echo $(rm -rf /)` is denied even though `echo` is allowed. A missing
-`tools.allow` under `allow-list` denies everything. `fail_closed` decides what a malformed block
-does.
+`[a]` records the root in `<state>/hax/trust.json`, so later runs in that worktree skip the prompt,
+including `hax -p`. `[t]` lasts for the process only. Delete the file, or its entry, to revoke.
+
+`bash.dangerous_commands` overrides the containment exemption: a match prints the command and
+waits for `y`, so `rm -rf` inside the folder is never one keystroke away. Patterns match the literal
+statement and its wrapper-stripped form, so listing either `sudo` or `rm` catches `sudo rm`. A
+non-interactive run cannot confirm, so a dangerous command there is denied.
+
+`deny-list` and `allow-list` are the static modes and ignore folder trust. `deny-list` denies the
+tools in `tools.deny` and the commands matching `bash.deny_commands`; it catches accidents, not
+intent, because it cannot see through shell composition. `allow-list` is a static restraint: a
+call runs only when its tool is in `tools.allow`, every command statement is allowed, and the
+command contains no composition — so `echo $(rm -rf /)` is denied even though `echo` is allowed. A
+missing `tools.allow` under `allow-list` denies everything. `fail_closed` decides what a malformed
+block does.
 
 ```json
 {

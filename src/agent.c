@@ -997,30 +997,23 @@ static struct item repl_loop_tool_asked(struct repl_loop_ctx *ctx, const struct 
     struct render_ctx *render = ctx->state->render;
     render_set_mode(render, RENDER_IDLE);
     char *detail = policy_call_detail(call);
-    int dangerous = policy_is_dangerous(call);
     /* The interrupt watcher owns stdin for the whole turn. Hand the terminal over while the
-     * operator decides, then resume Esc detection. Disarming also discards typed-ahead bytes. */
+     * operator confirms, then resume Esc detection. Disarming also discards typed-ahead bytes. */
     int interactive = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
     if (interactive)
         interrupt_disarm();
-    char *reason = NULL;
-    enum approve_choice choice = approve_prompt(call->tool_name, detail, dangerous, &reason);
+    int dangerous = policy_is_dangerous(call);
+    enum approve_kind kind = dangerous ? APPROVE_DANGEROUS : APPROVE_OUTSIDE;
+    int allowed = interactive && approve_run(kind, call->tool_name, detail);
     if (interactive)
         interrupt_arm();
     free(detail);
-    if (choice == APPROVE_ONCE || choice == APPROVE_SESSION) {
-        if (choice == APPROVE_SESSION)
-            policy_grant_session(call);
-        free(reason);
+    if (allowed)
         return dispatch_tool_call(render, call, image_input);
-    }
-    char *text = reason ? xasprintf("error: denied by policy: %s", reason)
-                        : xasprintf("error: denied by policy: %s",
-                                    call->tool_name ? call->tool_name : "tool");
-    struct item result = dispatch_tool_denied_reason(render, call, text);
-    free(text);
-    free(reason);
-    return result;
+    return dispatch_tool_denied_reason(
+        render, call, dangerous
+                            ? "error: denied by policy: dangerous command not confirmed"
+                            : "error: denied by policy: outside the trusted folder, not confirmed");
 }
 
 static struct item repl_loop_tool_call(const struct item *call, enum agent_loop_tool_action action,

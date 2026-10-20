@@ -1,4 +1,7 @@
 /* SPDX-License-Identifier: MIT */
+#include <string.h>
+#include <unistd.h>
+
 #include "config.h"
 #include "harness.h"
 #include "policy.h"
@@ -200,54 +203,124 @@ static void test_statement_split(void)
     EXPECT(!bash_command_has_composition(NULL));
 }
 
-static void test_ask_every_call(void)
+static void test_ask_trust_required(void)
 {
     EXPECT(config_load("{\"policy\":{\"mode\":\"ask\"}}") == 0);
-    struct item shell = bash_call("ls");
-    EXPECT(policy_verdict(&shell) == POLICY_VERDICT_ASK);
-    EXPECT(!policy_denies(&shell));
-    item_free(&shell);
+    EXPECT(policy_trust_required());
+    EXPECT(config_load("{\"policy\":{\"mode\":\"off\"}}") == 0);
+    EXPECT(!policy_trust_required());
+    EXPECT(config_load(NULL) == 0);
+}
 
-    struct item read = path_call("read", "/tmp/x");
+/* Trusting a folder does not trust the filesystem: a call naming anything outside the root is
+ * escalated instead of running quietly. */
+static void test_ask_trusted_stays_inside(void)
+{
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\"}}") == 0);
+    char root[4096];
+    EXPECT(getcwd(root, sizeof root) != NULL);
+    policy_set_trusted(1);
+    policy_set_workspace_root(root);
+
+    const char *quiet[] = {
+        "ls", "ls -la src", "rg -n main src/main.c", "ls 2>/dev/null", "git status",
+    };
+    for (size_t i = 0; i < sizeof(quiet) / sizeof(quiet[0]); i++) {
+        struct item call = bash_call(quiet[i]);
+        EXPECT(policy_verdict(&call) == POLICY_VERDICT_RUN);
+        item_free(&call);
+    }
+
+    const char *outside[] = {
+        "ls -la ~/Downloads",
+        "echo ~/x",
+        "cat /etc/passwd",
+        "cat</etc/passwd",
+        "cd ~/ && ls",
+        "echo hi > /tmp/x",
+        "make --output=/tmp/out",
+        "X=/tmp/x env",
+        "cat $HOME/.bashrc",
+    };
+    for (size_t i = 0; i < sizeof(outside) / sizeof(outside[0]); i++) {
+        struct item call = bash_call(outside[i]);
+        EXPECT(policy_verdict(&call) == POLICY_VERDICT_ASK);
+        EXPECT(!policy_denies(&call));
+        item_free(&call);
+    }
+
+    struct item read = path_call("read", "/work/project/src/main.c");
     EXPECT(policy_verdict(&read) == POLICY_VERDICT_ASK);
     item_free(&read);
+
+    struct item local = path_call("write", "./notes.md");
+    EXPECT(policy_verdict(&local) == POLICY_VERDICT_RUN);
+    item_free(&local);
+
+    struct item wait = make_call("task_wait", "{}");
+    EXPECT(policy_verdict(&wait) == POLICY_VERDICT_RUN);
+    item_free(&wait);
+
+    policy_set_workspace_root(NULL);
+    policy_set_trusted(0);
     EXPECT(config_load(NULL) == 0);
 }
 
-static void test_ask_grant_is_exact(void)
+/* Folder trust decides, not the call: trusted runs everything but dangerous commands. */
+static void test_ask_trusted_dangerous_confirms(void)
+{
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\",\"bash\":{\"dangerous_commands\":"
+                       "[\"rm\"]}}}") == 0);
+    policy_set_trusted(1);
+    struct item danger = bash_call("rm -rf build");
+    EXPECT(policy_verdict(&danger) == POLICY_VERDICT_ASK);
+    EXPECT(!policy_denies(&danger));
+    struct item safe = bash_call("ls -la");
+    EXPECT(policy_verdict(&safe) == POLICY_VERDICT_RUN);
+    item_free(&danger);
+    item_free(&safe);
+    policy_set_trusted(0);
+    EXPECT(config_load(NULL) == 0);
+}
+
+static void test_ask_untrusted_read_only(void)
 {
     EXPECT(config_load("{\"policy\":{\"mode\":\"ask\"}}") == 0);
-    policy_clear_session();
+    policy_set_trusted(0);
+    policy_set_workspace_root("/work/project");
 
-    struct item granted = bash_call("ls -la");
-    EXPECT(policy_verdict(&granted) == POLICY_VERDICT_ASK);
-    policy_grant_session(&granted);
-    EXPECT(policy_verdict(&granted) == POLICY_VERDICT_RUN);
+    struct item inside = path_call("read", "/work/project/src/main.c");
+    EXPECT(policy_verdict(&inside) == POLICY_VERDICT_RUN);
+    item_free(&inside);
 
-    struct item variant = bash_call("ls -la --color");
-    EXPECT(policy_verdict(&variant) == POLICY_VERDICT_ASK);
-    item_free(&variant);
+    struct item outside = path_call("read", "/etc/passwd");
+    EXPECT(policy_verdict(&outside) == POLICY_VERDICT_DENY);
+    char *reason = policy_deny_reason(&outside);
+    EXPECT(reason && strstr(reason, "not trusted"));
+    free(reason);
+    item_free(&outside);
 
-    struct item other_tool = make_call("bash", "{\"command\":\"ls\"}");
-    EXPECT(policy_verdict(&other_tool) == POLICY_VERDICT_ASK);
-    item_free(&other_tool);
+    struct item escape = path_call("read", "/work/project/../secrets");
+    EXPECT(policy_verdict(&escape) == POLICY_VERDICT_DENY);
+    item_free(&escape);
 
-    item_free(&granted);
-    policy_clear_session();
+    struct item sibling = path_call("read", "/work/project-copy/x");
+    EXPECT(policy_verdict(&sibling) == POLICY_VERDICT_DENY);
+    item_free(&sibling);
 
-    struct item after_clear = bash_call("ls -la");
-    EXPECT(policy_verdict(&after_clear) == POLICY_VERDICT_ASK);
-    item_free(&after_clear);
-    EXPECT(config_load(NULL) == 0);
-}
+    struct item shell = bash_call("ls");
+    EXPECT(policy_verdict(&shell) == POLICY_VERDICT_DENY);
+    item_free(&shell);
 
-static void test_ask_never_denies(void)
-{
-    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\",\"fail_closed\":true}}") == 0);
-    struct item call = bash_call("rm -rf /");
-    EXPECT(policy_verdict(&call) == POLICY_VERDICT_ASK);
-    EXPECT(policy_deny_reason(&call) == NULL);
-    item_free(&call);
+    struct item write = path_call("write", "/work/project/x");
+    EXPECT(policy_verdict(&write) == POLICY_VERDICT_DENY);
+    item_free(&write);
+
+    struct item wait = make_call("task_wait", "{}");
+    EXPECT(policy_verdict(&wait) == POLICY_VERDICT_RUN);
+    item_free(&wait);
+
+    policy_set_workspace_root(NULL);
     EXPECT(config_load(NULL) == 0);
 }
 
@@ -291,9 +364,10 @@ int main(void)
     test_path_traversal();
     test_fail_closed();
     test_statement_split();
-    test_ask_every_call();
-    test_ask_grant_is_exact();
-    test_ask_never_denies();
+    test_ask_trust_required();
+    test_ask_trusted_stays_inside();
+    test_ask_trusted_dangerous_confirms();
+    test_ask_untrusted_read_only();
     test_dangerous_commands();
 
     T_REPORT();

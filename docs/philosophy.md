@@ -90,9 +90,10 @@ forbids destructive git operations and tells the model to ask before irreversibl
 pauses a running turn for steering, and `max_turns` can bound unattended runs.
 
 An opt-in `policy` block adds more, and it is the one deliberate divergence from this section.
-`mode: "ask"` prompts per call — allow once, allow for the session, or deny with a reason — and
-double-confirms commands listed as dangerous; `deny-list` and `allow-list` are the non-interactive
-alternatives. None of it claims to be a boundary. It is described in
+`mode: "ask"` asks once per folder — trust this session, trust always, or stay read-only — and
+then only interrupts for a command that leaves the folder or matches the dangerous list;
+`deny-list` and `allow-list` are the non-interactive alternatives. Asking once at launch rather than at every call keeps the gate where the decision
+actually is: whether this project should run code at all. None of it claims to be a boundary. It is described in
 [configuration.md](./configuration.md#tool-call-policy) and designed in
 [policy-design.md](./policy-design.md). The divergence is recorded here so "why does hax have X?"
 keeps having a written answer.

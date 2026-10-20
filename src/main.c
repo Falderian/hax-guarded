@@ -17,6 +17,7 @@
 #include "session_prune.h"
 #include "trace.h"
 #include "transcript.h"
+#include "trust_gate.h"
 #include "providers/registry.h"
 #include "system/locale.h"
 #include "terminal/theme.h"
@@ -208,6 +209,9 @@ int main(int argc, char **argv)
     /* A restored or newly applied preset may change the theme. */
     theme_init();
     initialize_run_services(resume_path);
+    /* Ask mode is gated on the folder, and the answer must exist before the first tool call in
+     * either mode; a non-interactive run can only inherit an already-recorded trust. */
+    trust_gate_establish();
 
     unsigned long diagnostics_before_provider = hax_diag_sequence();
     provider =

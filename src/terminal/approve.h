@@ -2,17 +2,14 @@
 #ifndef HAX_TERMINAL_APPROVE_H
 #define HAX_TERMINAL_APPROVE_H
 
-enum approve_choice {
-    APPROVE_DENY,
-    APPROVE_ONCE,
-    APPROVE_SESSION,
+/* Which boundary the call crossed, so the operator sees why they are being asked. */
+enum approve_kind {
+    APPROVE_DANGEROUS,
+    APPROVE_OUTSIDE,
 };
 
-/* Ask the operator whether a tool call may run. `detail` is shown verbatim as the command line or
- * path under review. `dangerous` demands a second confirmation before an approval counts. On
- * APPROVE_DENY, *reason_out receives an allocated operator-supplied reason, or NULL when none was
- * typed; the caller owns it. Without a TTY the answer is APPROVE_DENY. */
-enum approve_choice approve_prompt(const char *tool, const char *detail, int dangerous,
-                                   char **reason_out);
+/* Confirmation for a call the policy escalated. Returns nonzero when the operator typed `y`; every
+ * other key, Esc, EOF, and a non-interactive frontend mean no. */
+int approve_run(enum approve_kind kind, const char *tool, const char *detail);
 
 #endif /* HAX_TERMINAL_APPROVE_H */

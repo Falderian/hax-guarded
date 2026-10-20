@@ -9,6 +9,7 @@
 #include "agent_tool.h"
 #include "config.h"
 #include "harness.h"
+#include "policy.h"
 #include "provider.h"
 #include "session.h"
 #include "tool.h"
@@ -456,6 +457,36 @@ static int chain_stream(struct provider *p, const struct context *ctx, const cha
     return 0;
 }
 
+/* A single bash call with a dangerous command, so ask mode's only prompt fires. */
+static int chain_bash_stream(struct provider *p, const struct context *ctx, const char *model,
+                             stream_cb cb, void *user, http_tick_cb tick, void *tick_user)
+{
+    (void)p;
+    (void)model;
+    (void)tick;
+    (void)tick_user;
+    EXPECT(ctx != NULL);
+    chain_turn++;
+
+    if (chain_turn == 1) {
+        struct stream_event start = {.kind = EV_TOOL_CALL_START,
+                                     .u.tool_call_start = {.id = "c1", .name = "bash"}};
+        struct stream_event delta = {.kind = EV_TOOL_CALL_DELTA,
+                                     .u.tool_call_delta = {
+                                         .id = "c1",
+                                         .args_delta = "{\"command\":\"rm -rf victim\"}",
+                                     }};
+        struct stream_event end = {.kind = EV_TOOL_CALL_END, .u.tool_call_end = {.id = "c1"}};
+        cb(&start, user);
+        cb(&delta, user);
+        cb(&end, user);
+    } else {
+        emit_text(cb, user, "finished");
+    }
+    emit_done(cb, user, usage_tokens(10 * chain_turn, 2));
+    return 0;
+}
+
 static char *captured_session_id;
 
 static int capture_stream(struct provider *p, const struct context *ctx, const char *model,
@@ -812,12 +843,14 @@ static void test_hookless_fallback_stamps_origins(void)
  * refusal keeps explicit provenance so replay cannot present it as executed. */
 static void test_loop_hookless_ask_fails_closed(void)
 {
-    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\",\"fail_closed\":true}}") == 0);
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\",\"bash\":{\"dangerous_commands\":"
+                       "[\"rm\"]}}}") == 0);
+    policy_set_trusted(1);
     struct agent_session session;
     session_init(&session);
     session_enable_tools(&session);
     agent_session_add_user(&session, "start");
-    struct provider provider = {.name = "test", .stream = chain_stream};
+    struct provider provider = {.name = "test", .stream = chain_bash_stream};
     struct loop_test_ctx ctx = {0};
     chain_turn = 0;
     chain_two_tools = 0;
@@ -833,6 +866,7 @@ static void test_loop_hookless_ask_fails_closed(void)
     EXPECT(refusal->origin == ITEM_ORIGIN_REFUSED);
     agent_loop_result_destroy(&result);
     agent_session_free(&session);
+    policy_set_trusted(0);
     EXPECT(config_load(NULL) == 0);
 }
 
@@ -840,12 +874,14 @@ static void test_loop_hookless_ask_fails_closed(void)
  * is what history keeps. */
 static void test_loop_ask_reaches_hook(void)
 {
-    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\"}}") == 0);
+    EXPECT(config_load("{\"policy\":{\"mode\":\"ask\",\"bash\":{\"dangerous_commands\":"
+                       "[\"rm\"]}}}") == 0);
+    policy_set_trusted(1);
     struct agent_session session;
     session_init(&session);
     session_enable_tools(&session);
     agent_session_add_user(&session, "start");
-    struct provider provider = {.name = "test", .stream = chain_stream};
+    struct provider provider = {.name = "test", .stream = chain_bash_stream};
     struct loop_test_ctx ctx = {0};
     chain_turn = 0;
     chain_two_tools = 0;
@@ -862,6 +898,7 @@ static void test_loop_ask_reaches_hook(void)
     EXPECT(declined->origin == ITEM_ORIGIN_REFUSED);
     agent_loop_result_destroy(&result);
     agent_session_free(&session);
+    policy_set_trusted(0);
     EXPECT(config_load(NULL) == 0);
 }
 

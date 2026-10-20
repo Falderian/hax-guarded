@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "config.h"
+#include "system/git.h"
 #include "tools/bash_classify.h"
 #include "xalloc.h"
 
@@ -329,43 +330,154 @@ static int path_denied(const json_t *paths, const char *tool, const char *raw)
     return denied;
 }
 
-/* --- session grants ---------------------------------------------------------------- */
+/* --- folder trust ------------------------------------------------------------------ */
 
-#define SESSION_GRANT_LIMIT 256
+static int policy_trusted;
+static char *workspace_root_cache;
 
-static char *session_grants[SESSION_GRANT_LIMIT];
-static size_t session_grant_count;
-
-static char *call_signature(const struct item *call)
+int policy_trust_required(void)
 {
-    return xasprintf("%s\x1f%s", call->tool_name ? call->tool_name : "",
-                     call->tool_arguments_json ? call->tool_arguments_json : "");
+    int malformed = 0;
+    return policy_mode(policy_block(), &malformed) == POLICY_ASK && !malformed;
 }
 
-static int session_granted(const struct item *call)
+int policy_is_trusted(void)
 {
-    char *signature = call_signature(call);
-    int granted = 0;
-    for (size_t i = 0; i < session_grant_count && !granted; i++)
-        granted = strcmp(session_grants[i], signature) == 0;
-    free(signature);
-    return granted;
+    return policy_trusted;
 }
 
-void policy_grant_session(const struct item *call)
+void policy_set_trusted(int trusted)
 {
-    if (!call || !call->tool_name || session_grant_count >= SESSION_GRANT_LIMIT)
-        return;
-    if (session_granted(call))
-        return;
-    session_grants[session_grant_count++] = call_signature(call);
+    policy_trusted = trusted;
 }
 
-void policy_clear_session(void)
+char *policy_workspace_root(void)
 {
-    for (size_t i = 0; i < session_grant_count; i++)
-        free(session_grants[i]);
-    session_grant_count = 0;
+    char *cwd = getcwd(NULL, 0);
+    if (!cwd)
+        return NULL;
+    char *root = git_find_worktree_root(cwd);
+    if (root) {
+        free(cwd);
+        return root;
+    }
+    return cwd;
+}
+
+void policy_set_workspace_root(const char *root)
+{
+    free(workspace_root_cache);
+    workspace_root_cache = root ? xstrdup(root) : NULL;
+}
+
+static const char *workspace_root(void)
+{
+    if (!workspace_root_cache)
+        workspace_root_cache = policy_workspace_root();
+    return workspace_root_cache;
+}
+
+/* Symlinks are not resolved, matching the documented limit of the path matcher. */
+static int path_inside_workspace(const char *path)
+{
+    const char *root = workspace_root();
+    if (!path || !root)
+        return 0;
+    char *normalized = path_normalize(path);
+    char *root_normalized = path_normalize(root);
+    int inside = path_has_prefix(normalized, root_normalized);
+    free(normalized);
+    free(root_normalized);
+    return inside;
+}
+
+/* The agent's tools take a path argument; an untrusted folder grants read only, and a trusted one
+ * asks for anything that points outside. */
+static int tool_path_inside_workspace(const struct item *call)
+{
+    char *path = arg_string(call->tool_arguments_json, "path");
+    int inside = path_inside_workspace(path);
+    free(path);
+    return inside;
+}
+
+/* Device nodes that cannot name a file the operator cares about. */
+static int is_neutral_device(const char *word)
+{
+    return strcmp(word, "/dev/null") == 0 || strcmp(word, "/dev/stdout") == 0 ||
+           strcmp(word, "/dev/stderr") == 0 || strcmp(word, "/dev/tty") == 0;
+}
+
+/* One shell word, which may be a path, a flag carrying one (`--out=/tmp/x`), or an assignment. */
+static int word_inside_workspace(const char *word)
+{
+    if (!*word)
+        return 1;
+    if (*word == '-') {
+        const char *value = strchr(word, '=');
+        return value ? word_inside_workspace(value + 1) : 1;
+    }
+    const char *value = strchr(word, '=');
+    const char *slash = strchr(word, '/');
+    if (value && slash && slash > value)
+        return word_inside_workspace(value + 1);
+    if (strstr(word, "://"))
+        return 1;
+    if (is_neutral_device(word))
+        return 1;
+    if (strstr(word, "$HOME") || strstr(word, "${HOME}"))
+        return 0;
+    if (word[0] == '~' && word[1] && word[1] != '/')
+        return 0;
+    return path_inside_workspace(word);
+}
+
+/* Best effort: every word that looks like a path must normalize inside the root. Words that are
+ * plain names resolve against the working directory, which the caller already keeps inside. The
+ * documented gaps are commands whose targets are implicit (`git config --global`, `cd` alone) and
+ * variables other than $HOME, which are assumed harmless. */
+static int bash_inside_workspace(const char *command)
+{
+    if (!command)
+        return 0;
+    char word[PATH_MAX];
+    size_t n = 0;
+    char quote = 0;
+    int inside = 1;
+    const char *cursor = command;
+    for (;;) {
+        char c = *cursor;
+        if (c && quote) {
+            if (c == quote)
+                quote = 0;
+            else if (n + 1 < sizeof word)
+                word[n++] = c;
+            cursor++;
+            continue;
+        }
+        if (c == '\'' || c == '"') {
+            quote = c;
+            cursor++;
+            continue;
+        }
+        int boundary = c == '\0' || isspace((unsigned char)c) || strchr(";|&<>()", c) != NULL;
+        if (!boundary) {
+            if (n + 1 < sizeof word)
+                word[n++] = c;
+            cursor++;
+            continue;
+        }
+        word[n] = '\0';
+        n = 0;
+        if (!word_inside_workspace(word)) {
+            inside = 0;
+            break;
+        }
+        if (!c)
+            break;
+        cursor++;
+    }
+    return inside;
 }
 
 /* --- decisions --------------------------------------------------------------------- */
@@ -406,8 +518,26 @@ enum policy_verdict policy_verdict(const struct item *call)
                                                                    : POLICY_VERDICT_RUN;
     if (mode == POLICY_OFF || !call || call->kind != ITEM_TOOL_CALL || !call->tool_name)
         return POLICY_VERDICT_RUN;
-    if (mode == POLICY_ASK)
-        return session_granted(call) ? POLICY_VERDICT_RUN : POLICY_VERDICT_ASK;
+    if (mode == POLICY_ASK) {
+        if (policy_trusted) {
+            if (policy_is_dangerous(call))
+                return POLICY_VERDICT_ASK;
+            if (strcmp(call->tool_name, "bash") == 0) {
+                char *command = arg_string(call->tool_arguments_json, "command");
+                int inside = bash_inside_workspace(command);
+                free(command);
+                return inside ? POLICY_VERDICT_RUN : POLICY_VERDICT_ASK;
+            }
+            if (is_path_tool(call->tool_name))
+                return tool_path_inside_workspace(call) ? POLICY_VERDICT_RUN : POLICY_VERDICT_ASK;
+            return POLICY_VERDICT_RUN;
+        }
+        if (strcmp(call->tool_name, "read") == 0)
+            return tool_path_inside_workspace(call) ? POLICY_VERDICT_RUN : POLICY_VERDICT_DENY;
+        if (strcmp(call->tool_name, "task_wait") == 0)
+            return POLICY_VERDICT_RUN;
+        return POLICY_VERDICT_DENY;
+    }
     return listed_denied(mode, block, call) ? POLICY_VERDICT_DENY : POLICY_VERDICT_RUN;
 }
 
@@ -420,7 +550,14 @@ char *policy_deny_reason(const struct item *call)
 {
     if (!policy_denies(call))
         return NULL;
-    return xasprintf("error: denied by policy: %s", call->tool_name);
+    int malformed = 0;
+    if (policy_mode(policy_block(), &malformed) == POLICY_ASK && !policy_trusted) {
+        if (call->tool_name && strcmp(call->tool_name, "read") == 0)
+            return xstrdup("error: denied by policy: folder not trusted; reads are limited to it");
+        return xstrdup("error: denied by policy: folder not trusted; restart hax here and answer "
+                       "[t] or [a]");
+    }
+    return xasprintf("error: denied by policy: %s", call->tool_name ? call->tool_name : "tool");
 }
 
 /* --- dangerous commands ------------------------------------------------------------ */

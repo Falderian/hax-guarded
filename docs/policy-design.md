@@ -44,36 +44,56 @@ using.
 
 ## Ask mode
 
-The operator-facing gate is `mode: "ask"`. It accepts the philosophy.md objection by putting the
-decision in the hands of the person who already knows the blast radius, and it is opt-in: with no
-`policy` block nothing prompts.
+The operator-facing gate is `mode: "ask"`, and it is opt-in: with no `policy` block nothing
+prompts. Per-call approval was tried first and rejected — a long session becomes a keystroke
+treadmill, and the answer is nearly always yes for work inside the project. The decision that
+actually carries information is made once, at launch: **is this folder trusted?**
 
-Every call that has not been granted prompts once, with three choices: `[a]` allow once, `[s]`
-allow for the rest of the session, and `[d]` deny. A denial takes an optional typed reason, which
-becomes the tool result (`error: denied by policy: <reason>`) — the model learns why, instead of
-guessing. Esc and Ctrl-C deny without a reason.
+At startup hax resolves the workspace root (the git worktree root containing the working
+directory, else the working directory) and, if it is not already in the trust store, asks:
 
-Session grants are **exact**: the key is the tool name plus its arguments JSON, so approving
-`git status` does not approve `git status --short`, and approving one `write` path does not approve
-another. Grants live in process memory and disappear with the session.
+```
+Trust this folder? /home/admin/Projects/hax-guarded
+[t] this session   [a] always   [n] no (read-only)
+```
 
-`bash.dangerous_commands` adds friction where it matters instead of gating everything twice: a
-match forces a second confirmation, so `rm -rf`, `sudo`, and `git reset --hard` are never one
-keystroke away. Matching considers both the literal statement and its wrapper-stripped form, so
-`sudo rm` trips whichever of the two is listed.
+The two answers define the mode:
 
-A frontend with no prompt (`hax -p`, background dispatch) cannot ask, so an ASK verdict there
-fails closed and becomes a denial. That keeps unattended runs bounded by the same config.
+- **Trusted** — tools run without prompting while they stay inside the folder. `bash` is scanned
+  for path-shaped words (including `~/`, `..`, redirections, `--flag=path`, and `$HOME`); a word
+  that normalizes outside the root escalates to a `y/N` labelled `OUTSIDE THE FOLDER`, and the
+  same applies to a `read`/`edit`/`write` path outside it. `bash.dangerous_commands` is the second
+  exception: a match asks `DANGEROUS bash: …` with `y/N`, even inside the folder.
+- **Untrusted** — read-only. `read` runs only when its path normalizes inside the root,
+  `task_wait` runs, and `bash`, `edit` and `write` are denied without prompting. The denial names
+  the reason so the model stops retrying and tells the operator to trust the folder.
+
+`[a]` persists the root in `<state>/hax/trust.json`, an auto-managed file kept out of `config.json`
+so `/config` writes and hand edits never collide with it. `[t]` lasts for the process. A
+non-interactive run (`hax -p`, background dispatch) never prompts and is therefore untrusted unless
+the folder is already recorded — the same config, bounded for unattended use.
+
+Dangerous matching considers both the literal statement and its wrapper-stripped form, so `sudo
+rm` trips whichever of the two is listed, and a non-interactive run denies rather than confirms.
+Containment is a token scan, not a sandbox: it catches explicit paths, and it deliberately does
+not try to model commands whose targets are implicit (`git config --global`, a bare `cd`), which
+is why trust is still asked for per folder.
 
 ### Terminal ownership
 
 The REPL arms the interrupt watcher (`interrupt_arm`) for the whole turn, so during tool dispatch
-another thread already owns stdin and is classifying bytes for Esc. The prompt therefore calls
+another thread already owns stdin and is classifying bytes for Esc. Both prompts therefore call
 `interrupt_disarm()` before reading and `interrupt_arm()` after; without that handover the two
 readers steal each other's keys and every prompt looks like an immediate Esc. Two consequences
-follow: the prompt must write `\r\n` because raw mode clears `OPOST`, and it flushes typed-ahead
-input before re-arming so leftovers are not read as interrupts.
+follow: prompt text must use `\r\n` because raw mode clears `OPOST`, and the prompt flushes
+typed-ahead input before re-arming so leftovers are not read as interrupts.
 
+Keys are decoded rather than taken as raw bytes (`terminal/keyread.c`): a lone Esc (nothing pending
+within 30 ms) cancels, while `CSI … u` sequences are mapped to their codepoint so terminals using
+the kitty keyboard protocol (kitty, foot, wezterm, Ghostty) work unchanged. Arrows, mouse and focus
+sequences are dropped. Enter reprints the options instead of doing nothing silently, and the answer
+is echoed. `HAX_APPROVE_DEBUG=1` appends every byte read, as hex, to `<state>/hax/approve.log` for
+diagnosing an unfamiliar terminal.
 
 ## Configuration
 
@@ -170,9 +190,11 @@ int policy_is_dangerous(const struct item *call);
 /* Allocated prompt detail: the command line, the path, or the raw arguments. */
 char *policy_call_detail(const struct item *call);
 
-/* Exact-match session grants, held in process memory. */
-void policy_grant_session(const struct item *call);
-void policy_clear_session(void);
+/* Folder trust: the ask-mode gate. A non-interactive frontend never gains it. */
+int policy_trust_required(void);
+void policy_set_trusted(int trusted);
+char *policy_workspace_root(void);
+void policy_set_workspace_root(const char *root);
 ```
 
 The two `bash_classify` additions keep parsing owned by that file and give `policy.c` no access to
@@ -192,8 +214,10 @@ contract: unlike the exploration heuristic, these primitives feed an execution d
 - **allow-list** denies when any statement is unmatched, or when the command composes at all.
   Malformed arguments fail closed.
 - **deny-list** denies when any statement matches a deny pattern.
-- **ask** never denies on its own; it returns ASK unless the exact (tool, arguments) pair is
-  already granted, in which case it returns RUN.
+- **ask** is decided by folder trust, read once at launch. Trusted: RUN, except a dangerous
+  command, which is ASK. Untrusted: RUN for `task_wait` and for `read` whose path normalizes
+  inside the root; DENY for everything else. The root is the git worktree root, else the working
+  directory; symlinks are not resolved, like the path matcher.
 - **dangerous.** `bash.dangerous_commands` is matched like a deny pattern but against both the
   literal and wrapper-stripped statement, so listing either `sudo` or `rm` catches `sudo rm`. It
   only raises friction; it never blocks.
@@ -206,7 +230,8 @@ Resolution happens on every call rather than being cached, which keeps it correc
 `/config` change and costs only a few JSON lookups between tool calls.
 
 The model-facing result is `error: denied by policy: <tool>`, with `ITEM_ORIGIN_REFUSED`; the
-terminal shows a `[denied by policy]` marker.
+terminal shows a `[denied by policy]` marker. An untrusted folder replaces `<tool>` with the reason
+that names the folder, so the model stops retrying and asks the operator to trust it.
 
 ## Wiring
 
@@ -216,7 +241,12 @@ terminal shows a `[denied by policy]` marker.
 | `src/agent_loop.h` | add `AGENT_LOOP_TOOL_DENY` and `AGENT_LOOP_TOOL_ASK` |
 | `src/agent_loop.c` | policy branch in the dispatch loop; hookless `DENY`/`ASK` |
 | `src/agent.c` | `DENY` and `ASK` cases in `repl_loop_tool_call`; prompt wiring |
-| `src/terminal/approve.c` / `.h` | the raw-mode prompt: once / session / deny + reason |
+| `src/terminal/approve.c` / `.h` | dangerous-command confirmation (`y`/`N`) |
+| `src/terminal/keyread.c` / `.h` | key decoding: bare Esc, CSI-u, ignored sequences |
+| `src/terminal/trust_prompt.c` / `.h` | launch-time trust question |
+| `src/trust_store.c` / `.h` | persisted trust list in `<state>/hax/trust.json` |
+| `src/trust_gate.c` / `.h` | resolves the root and applies persisted or prompted trust |
+| `src/main.c` | calls the gate before either frontend starts |
 | `src/agent_dispatch.c` / `.h` | `dispatch_tool_denied`, `dispatch_tool_denied_reason` |
 | `src/agent_core.h` | `DENIED_MARKER` |
 | `src/tools/bash_classify.c` / `.h` | the two primitives |
@@ -239,22 +269,30 @@ inversion is unwanted, the alternative is a reason parameter on the `tool_call` 
   (`$(…)`, backticks, `<<<`, `&`) denied; `ls 2>/dev/null` allowed; malformed arguments denied.
 - Paths: component-boundary matching, `write_only`, and `..` collapse.
 - `fail_closed` on a malformed block.
-- Ask: ASK for an ungranted call, RUN after an exact grant, still ASK for a changed argument, and
-  ASK again after the session is cleared.
+- Ask, trusted: `ls`, `rg -n main src/main.c`, `ls 2>/dev/null` and `git status` run; `ls -la
+  ~/Downloads`, `cat /etc/passwd`, `cat</etc/passwd`, `cd ~/ && ls`, `> /tmp/x`, `--out=/tmp/x`,
+  `X=/tmp/x env` and `$HOME/.bashrc` escalate, as does an out-of-root path tool; dangerous commands
+  escalate even inside the root.
+- Ask, untrusted: runs `read` inside the root and `task_wait` only, denies `bash`/`edit`/`write`,
+  denies a read outside the root, denies `..` escapes and the sibling `project-copy`, and names the
+  folder in the denial.
+- Trust gate: `policy_trust_required()` is true only for `ask`, false for `off`.
 - Dangerous: `sudo ls`, `rm -rf`, `env X=1 rm`, and `git reset --hard` flagged; `grep rm file` and
   `echo sudoers` not, and non-bash tools never.
 - Integration: `tests/test_agent_loop.c` covers hookless ASK failing closed (never dispatched,
   `ITEM_ORIGIN_REFUSED`, "approval required…") and the hook receiving ASK exactly once;
   `tests/test_agent_dispatch.c` covers `dispatch_tool_denied_reason` emitting the marker with the
   operator's reason and falling back to the generic refusal when it is NULL.
-- `terminal/approve.c` is not covered by the suite: it needs a TTY. It was verified manually on a
-  pty for once/session/deny-with-reason/Esc and both dangerous-command paths.
+- `terminal/approve.c` and `terminal/trust_prompt.c` are not covered by the suite: they need a
+  TTY. They were verified on a pty for `y`/`n`/Esc/Enter and both CSI-u and plain bytes, and the
+  whole flow (untrusted denial, session trust, persisted trust, no second prompt, dangerous
+  confirmed and refused) against a mock provider driving the real REPL.
 
 ## Cost
 
-Roughly 900 lines: 430 in the new policy module, 140 in `terminal/approve.c`, 20 in
-`bash_classify`, 60 of wiring, 290 of tests, 60 of documentation. Three files added, no new
-dependency, still one binary.
+Roughly 1120 lines: 530 in the policy module, 90 across `keyread`/`approve`/`trust_prompt`, 100
+for the trust store and gate, 20 in `bash_classify`, 80 of wiring, 300 of tests, 80 of
+documentation. Eight files added, no new dependency, still one binary.
 
 ## Limitations
 
